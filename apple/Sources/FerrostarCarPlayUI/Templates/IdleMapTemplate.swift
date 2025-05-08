@@ -1,4 +1,5 @@
 import CarPlay
+import MapKit
 
 // TODO: This has yet to be tested/used, but it's here as a starting point for the default idle.
 public class IdleMapTemplate: CPMapTemplate {
@@ -13,6 +14,8 @@ public class IdleMapTemplate: CPMapTemplate {
     public var onTripPreviewTapped: (() -> Void)?
 
     private var currentTrip: CPTrip?
+    
+    @available(iOS 14.0, *)
     private var tripPreviewTemplate: CPTripPreviewTemplate?
 
     // MARK: - Initialization
@@ -85,23 +88,19 @@ public class IdleMapTemplate: CPMapTemplate {
     public func showTripPreview() {
         guard let trip = currentTrip else { return }
         
-        let previewTemplate = CPTripPreviewTemplate(trips: [trip])
-        previewTemplate.tripDelegate = self
-        
-        tripPreviewTemplate = previewTemplate
-        presentTemplate(previewTemplate, animated: true)
+        // Show the trip preview using CPMapTemplate's built-in preview functionality
+        showTripPreviews([trip], textConfiguration: nil)
     }
 }
 
-// MARK: - CPTripPreviewTemplateDelegate
-extension IdleMapTemplate: CPTripPreviewTemplateDelegate {
-    public func tripPreviewTemplate(_ tripPreviewTemplate: CPTripPreviewTemplate, selectedTrip trip: CPTrip) {
+// MARK: - CPMapTemplateDelegate
+extension IdleMapTemplate: CPMapTemplateDelegate {
+    public func mapTemplate(_ mapTemplate: CPMapTemplate, selectedPreviewFor trip: CPTrip, using routeChoice: CPRouteChoice) {
         // Start navigation with the selected trip
         onStartNavigationButtonTapped?()
-        dismissTemplate(animated: true)
     }
     
-    public func tripPreviewTemplateDidCancel(_ tripPreviewTemplate: CPTripPreviewTemplate) {
-        dismissTemplate(animated: true)
+    public func mapTemplateDidCancelNavigation(_ mapTemplate: CPMapTemplate) {
+        // Handle navigation cancellation
     }
 }
