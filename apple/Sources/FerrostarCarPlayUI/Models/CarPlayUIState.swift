@@ -10,5 +10,17 @@ enum CarPlayUIState: Equatable {
     /// The Ferrostar supplied navigation template.
     case navigating
 
+    /// The search interface is being displayed
+    case searching
+
+    /// A route preview is being displayed
+    case previewingRoute(CPTrip)
+
+    /// An error has occurred
+    case error(String)
+
+    /// The app is loading or processing
+    case loading
+
     // TODO: What other cases should we offer for configuration?
 }

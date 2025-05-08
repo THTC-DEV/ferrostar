@@ -5,10 +5,15 @@ public class IdleMapTemplate: CPMapTemplate {
     private var searchButton: CPBarButton?
     private var recenterButton: CPMapButton?
     private var startNavigationButton: CPMapButton?
+    private var tripPreviewButton: CPBarButton?
 
     public var onSearchButtonTapped: (() -> Void)?
     public var onRecenterButtonTapped: (() -> Void)?
     public var onStartNavigationButtonTapped: (() -> Void)?
+    public var onTripPreviewTapped: (() -> Void)?
+
+    private var currentTrip: CPTrip?
+    private var tripPreviewTemplate: CPTripPreviewTemplate?
 
     // MARK: - Initialization
 
@@ -30,7 +35,12 @@ public class IdleMapTemplate: CPMapTemplate {
             self?.onSearchButtonTapped?()
         })
 
-        leadingNavigationBarButtons = [searchButton].compactMap { $0 }
+        // Configure trip preview button
+        tripPreviewButton = CPBarButton(title: "Preview", handler: { [weak self] _ in
+            self?.onTripPreviewTapped?()
+        })
+
+        leadingNavigationBarButtons = [searchButton, tripPreviewButton].compactMap { $0 }
 
         // Configure map buttons
         setupMapButtons()
@@ -65,5 +75,33 @@ public class IdleMapTemplate: CPMapTemplate {
 
     public func updateStartNavigationButtonImage(_ image: UIImage?) {
         startNavigationButton?.image = image
+    }
+
+    public func updateTripPreview(_ trip: CPTrip?) {
+        currentTrip = trip
+        tripPreviewButton?.isEnabled = trip != nil
+    }
+
+    public func showTripPreview() {
+        guard let trip = currentTrip else { return }
+        
+        let previewTemplate = CPTripPreviewTemplate(trips: [trip])
+        previewTemplate.tripDelegate = self
+        
+        tripPreviewTemplate = previewTemplate
+        presentTemplate(previewTemplate, animated: true)
+    }
+}
+
+// MARK: - CPTripPreviewTemplateDelegate
+extension IdleMapTemplate: CPTripPreviewTemplateDelegate {
+    public func tripPreviewTemplate(_ tripPreviewTemplate: CPTripPreviewTemplate, selectedTrip trip: CPTrip) {
+        // Start navigation with the selected trip
+        onStartNavigationButtonTapped?()
+        dismissTemplate(animated: true)
+    }
+    
+    public func tripPreviewTemplateDidCancel(_ tripPreviewTemplate: CPTripPreviewTemplate) {
+        dismissTemplate(animated: true)
     }
 }

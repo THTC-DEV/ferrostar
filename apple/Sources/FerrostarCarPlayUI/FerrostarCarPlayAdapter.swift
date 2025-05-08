@@ -18,6 +18,7 @@ class FerrostarCarPlayAdapter: NSObject {
     private var mapTemplate: CPMapTemplate?
     private var idleTemplate: IdleMapTemplate?
     private var navigatingTemplate: NavigatingTemplateHost?
+    private var searchTemplate: CPSearchTemplate?
 
     var currentSession: CPNavigationSession?
     var currentTrip: CPTrip?
@@ -44,16 +45,18 @@ class FerrostarCarPlayAdapter: NSObject {
         onStartTrip: @escaping () -> Void,
         onCancelTrip: @escaping () -> Void
     ) {
+        self.mapTemplate = mapTemplate
+        
         navigatingTemplate = NavigatingTemplateHost(
             mapTemplate: mapTemplate,
             formatters: formatterCollection,
             units: distanceUnits,
-            showCentering: showCentering, // TODO: Make this dynamic based on the camera state
+            showCentering: showCentering,
             onCenter: onCenter,
             onStartTrip: onStartTrip,
             onCancelTrip: onCancelTrip
         )
-
+        
         setupObservers()
     }
 
@@ -64,15 +67,53 @@ class FerrostarCarPlayAdapter: NSObject {
         idleTemplate = IdleMapTemplate()
 
         idleTemplate?.onSearchButtonTapped = { [weak self] in
-            // Handle search
+            self?.showSearchInterface()
         }
 
         idleTemplate?.onRecenterButtonTapped = { [weak self] in
-            // Handle recenter
+            self?.recenterMap()
         }
 
         idleTemplate?.onStartNavigationButtonTapped = { [weak self] in
-            // Handle start navigation
+            self?.startNavigation()
+        }
+        
+        idleTemplate?.onTripPreviewTapped = { [weak self] in
+            self?.showTripPreview()
+        }
+    }
+
+    private func showTripPreview() {
+        idleTemplate?.showTripPreview()
+    }
+
+    private func showSearchInterface() {
+        guard let mapTemplate = mapTemplate else { return }
+        
+        let searchTemplate = CPSearchTemplate()
+        searchTemplate.delegate = self
+        
+        uiState = .searching
+        mapTemplate.presentTemplate(searchTemplate, animated: true)
+        self.searchTemplate = searchTemplate
+    }
+    
+    private func recenterMap() {
+        guard let mapTemplate = mapTemplate else { return }
+        mapTemplate.showPanningInterface(animated: true)
+    }
+    
+    private func startNavigation() {
+        guard let trip = currentTrip else {
+            uiState = .error("No route selected")
+            return
+        }
+        
+        do {
+            try navigatingTemplate?.start(routes: [trip], waypoints: [])
+            uiState = .navigating
+        } catch {
+            uiState = .error("Failed to start navigation: \(error.localizedDescription)")
         }
     }
 
@@ -98,19 +139,36 @@ class FerrostarCarPlayAdapter: NSObject {
                     uiState = .navigating
                     do {
                         try navigatingTemplate?.start(routes: [route], waypoints: route.waypoints)
-                        print("CarPlay - started")
                     } catch {
-                        print("CarPlay - startup error: \(error)")
+                        uiState = .error("Failed to start navigation: \(error.localizedDescription)")
                     }
                 }
                 navigatingTemplate?.update(navigationState: navState)
             case .complete:
                 navigatingTemplate?.completeTrip()
+                uiState = .idle(nil)
             case .idle:
                 break
             }
         }
         .store(in: &cancellables)
+
+        // Update trip preview when route changes
+        ferrostarCore.$route
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] route in
+                guard let self else { return }
+                if let route {
+                    // Convert Ferrostar route to CPTrip
+                    let trip = self.convertToCPTrip(route)
+                    self.currentTrip = trip
+                    self.idleTemplate?.updateTripPreview(trip)
+                } else {
+                    self.currentTrip = nil
+                    self.idleTemplate?.updateTripPreview(nil)
+                }
+            }
+            .store(in: &cancellables)
 
         ferrostarCore.$state
             .receive(on: DispatchQueue.main)
@@ -130,5 +188,98 @@ class FerrostarCarPlayAdapter: NSObject {
                 navigatingTemplate?.update(instruction, currentStep: step)
             }
             .store(in: &cancellables)
+    }
+
+    private func convertToCPTrip(_ route: Route) -> CPTrip {
+        // Create trip origin and destination
+        let origin = MKMapItem(placemark: MKPlacemark(
+            coordinate: route.waypoints.first?.coordinate ?? CLLocationCoordinate2D(),
+            addressDictionary: nil
+        ))
+        
+        let destination = MKMapItem(placemark: MKPlacemark(
+            coordinate: route.waypoints.last?.coordinate ?? CLLocationCoordinate2D(),
+            addressDictionary: nil
+        ))
+        
+        // Create trip
+        let trip = CPTrip(origin: origin, destination: destination, routeChoices: [])
+        
+        // Add route choices if available
+        if let alternatives = route.alternatives {
+            trip.routeChoices = alternatives.map { alternative in
+                let choice = CPRouteChoice(summaryVariants: [alternative.summary])
+                choice.userInfo = alternative
+                return choice
+            }
+        }
+        
+        return trip
+    }
+}
+
+// MARK: - CPSearchTemplateDelegate
+extension FerrostarCarPlayAdapter: CPSearchTemplateDelegate {
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String, completionHandler: @escaping ([CPSearchTemplate.SearchResult]) -> Void) {
+        guard !searchText.isEmpty else {
+            completionHandler([])
+            return
+        }
+        
+        Task {
+            do {
+                let results = try await ferrostarCore.geocode(query: searchText)
+                let searchResults = results.map { result in
+                    let item = MKMapItem(placemark: MKPlacemark(
+                        coordinate: result.coordinate,
+                        addressDictionary: nil
+                    ))
+                    item.name = result.name
+                    return CPSearchTemplate.SearchResult(item: item, text: result.name)
+                }
+                completionHandler(searchResults)
+            } catch {
+                print("Geocoding error: \(error)")
+                completionHandler([])
+            }
+        }
+    }
+    
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPSearchTemplate.SearchResult, completionHandler: @escaping () -> Void) {
+        guard let coordinate = item.item.placemark.location?.coordinate else {
+            completionHandler()
+            return
+        }
+        
+        Task {
+            do {
+                // Calculate route to selected location
+                let route = try await ferrostarCore.calculateRoute(
+                    from: ferrostarCore.currentLocation ?? CLLocationCoordinate2D(),
+                    to: coordinate
+                )
+                
+                // Update UI state and show trip preview
+                await MainActor.run {
+                    let trip = convertToCPTrip(route)
+                    currentTrip = trip
+                    idleTemplate?.updateTripPreview(trip)
+                    uiState = .previewingRoute(trip)
+                }
+                
+                mapTemplate?.dismissTemplate(animated: true)
+                completionHandler()
+            } catch {
+                await MainActor.run {
+                    uiState = .error("Failed to calculate route: \(error.localizedDescription)")
+                }
+                completionHandler()
+            }
+        }
+    }
+    
+    func searchTemplateSearchCancelled(_ searchTemplate: CPSearchTemplate) {
+        mapTemplate?.dismissTemplate(animated: true)
+        uiState = .idle(nil)
     }
 }
